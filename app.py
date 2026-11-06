@@ -65,17 +65,16 @@ def load_history():
 df, data_source = load_history()
 st.success(f"数据源：{data_source} ｜ 最新：{df.iloc[-1]['issue']} ｜ 刷新：5分钟")
 
-# ==================== 评分与冷热温计算（深度修正版） ====================
+# ==================== 评分与冷热温计算 ====================
 def compute_scores(df):
     reds_list = df["reds"].tolist()
     n = len(reds_list)
     windows = [10, 20, 30, 50]
     
     freq_scores = {}
-    true_freq_50 = {} # 准确记录真实的近50期出现次数
+    true_freq_50 = {} 
     
     for num in range(1, 34):
-        # 1. 算评分用的平滑频率
         vals = []
         for w in windows:
             recent = reds_list[-w:] if n >= w else reds_list
@@ -83,7 +82,6 @@ def compute_scores(df):
             vals.append(cnt / len(recent))
         freq_scores[num] = np.mean(vals)
         
-        # 2. 算真实的近50期频次（用于冷热标签）
         recent_50 = reds_list[-50:] if n >= 50 else reds_list
         true_freq_50[num] = sum(1 for d in recent_50 if num in d)
 
@@ -100,7 +98,6 @@ def compute_scores(df):
                 if last is not None: hist.append(i - last)
                 last = i
         avg = np.mean(hist) if hist else 1
-        # 遗漏分防膨胀：最高封顶3倍
         miss_scores[num] = min(cur / max(avg, 1), 3.0) 
 
     last_draw = reds_list[-1]
@@ -123,7 +120,6 @@ def compute_scores(df):
     for num in range(1, 34):
         comp = 0.45*f_n[num] + 0.30*m_n[num] + 0.20*c_n[num] + 0.05*r_n[num]
         
-        # 重定义冷热温标准（50期理论平均9次）
         tf = true_freq_50[num]
         if tf >= 11: tag = "🔥热"
         elif tf <= 7: tag = "❄️冷"
@@ -234,7 +230,6 @@ def calculate_best_singles(score_list, n_picks=5):
     random.seed(42) 
     candidates = set()
     
-    # 尝试最多 15 万次，确保能凑够用户需要的组数
     attempts = 0
     while len(candidates) < 60000 and attempts < 150000:
         attempts += 1
@@ -257,7 +252,6 @@ def calculate_best_singles(score_list, n_picks=5):
     final_picks = []
     seen_reds = []
     
-    # 蓝球动态池
     hot_blues = blue_score_df[blue_score_df["冷热标签"] == "🔥热"]["蓝球"].tolist()
     warm_blues = blue_score_df[blue_score_df["冷热标签"] == "🌤温"]["蓝球"].tolist()
     cold_blues = blue_score_df[blue_score_df["冷热标签"] == "❄️冷"]["蓝球"].tolist()
@@ -325,14 +319,13 @@ with tab2:
         top_reds = score_df.head(n_red)
         cold_in_top = top_reds[top_reds["冷热标签"] == "❄️冷"]
         
-        # 双重防线抓冷号
         if len(cold_in_top) == 0:
             all_colds = score_df[score_df["冷热标签"] == "❄️冷"]
             if len(all_colds) > 0:
                 best_cold = int(all_colds.iloc[0]["号码"])
                 best_reds = sorted(score_df.head(n_red-1)["号码"].tolist() + [best_cold])
             else:
-                best_reds = sorted(top_reds["号码"].tolist()) # 极端情况容错
+                best_reds = sorted(top_reds["号码"].tolist())
         else:
             best_reds = sorted(top_reds["号码"].tolist())
             
