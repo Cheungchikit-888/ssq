@@ -10,7 +10,7 @@ from math import comb
 
 st.set_page_config(page_title="双色球最优解计算器", layout="centered")
 st.title("双色球最优解计算器")
-st.caption("海量数据测算 + 科学惩罚分散 + 概率热力展示。")
+st.caption("海量数据测算 + 科学过滤废号 + 概率热力展示。")
 
 PER_BET = 2
 MAX_AMOUNT = 20000
@@ -167,24 +167,24 @@ def get_rating(score):
     if score >= 70: return "B级 · 良好解 ✅"
     return "C级 · 普通解"
 
-# ==================== 单式最优解测算（引入评分惩罚机制） ====================
+# ==================== 单式最优解测算（彻底废除废号） ====================
 @st.cache_data(ttl=3600)
 def calculate_best_singles(score_list, n_picks=5):
     score_map = dict(score_list)
     random.seed(42) 
-    candidates = []
-    for _ in range(100000):
+    
+    # 生成候选池：强制过滤废号，只要满足全部 6 项结构的才能进入池子
+    candidates = set()
+    while len(candidates) < 50000:
         reds = tuple(sorted(random.sample(range(1, 34), 6)))
-        candidates.append(reds)
-    
-    unique_cands = list(set(candidates))
+        checks, passed = structure_analysis(reds)
+        if passed == 6:  # 强制满分结构
+            candidates.add(reds)
+            
     scored_cands = []
-    
-    for cand in unique_cands:
-        base_sc, checks = get_group_score(cand, score_map)
-        passed = sum(1 for _, _, ok, _ in checks if ok)
-        if passed >= 5 and base_sc > 70:
-            scored_cands.append((base_sc, list(cand)))
+    for cand in candidates:
+        sc, _ = get_group_score(cand, score_map)
+        scored_cands.append((sc, list(cand)))
             
     # 按基础分降序
     scored_cands.sort(key=lambda x: x[0], reverse=True)
@@ -196,19 +196,20 @@ def calculate_best_singles(score_list, n_picks=5):
     for base_sc, cand in scored_cands:
         if len(final_picks) >= n_picks: break
         
-        # 【科学惩罚机制】
+        # 【温和惩罚机制】
         overlap_penalty = 0
         valid = True
         for selected in seen_reds:
             overlap_count = len(set(cand) & set(selected))
-            if overlap_count >= 4: # 如果重合4个及以上，直接淘汰
+            if overlap_count >= 4: # 重合4个直接淘汰
                 valid = False
                 break
             elif overlap_count == 3:
-                overlap_penalty += 5 # 如果重合3个，扣5分惩罚
+                overlap_penalty += 5 # 重合3个扣5分
         
         if valid:
             final_sc = round(base_sc - overlap_penalty, 1)
+            # 蓝球按热度轮流分配
             blue = int(blue_score_df.iloc[blue_idx % 16]["蓝球"])
             final_picks.append((final_sc, cand, blue, overlap_penalty))
             seen_reds.append(cand)
@@ -217,14 +218,15 @@ def calculate_best_singles(score_list, n_picks=5):
     return final_picks
 
 # ==================== 界面 ====================
-tab1, tab2, tab3 = st.tabs(["🎯 最优单式", "📦 最优复式", "🔥 概率热力图"])
+tab1, tab2, tab3, tab4 = st.tabs(["🎯 最优单式", "📦 最优复式", "🔥 热力图", "📜 历史开奖"])
 
 with tab1:
     st.subheader("测算最优单式")
-    st.caption("已启用【温和惩罚机制】：极优解会被保留，重合度过高的组合会被扣分降级。")
-    n_picks = st.slider("测算前几组", 5, 15, 5)
+    st.caption("已启用【废号封杀】：后台只测算 100% 满足历史常态结构的组合。")
+    n_picks = st.slider("测算前几组", 1, 15, 5) # 组数放宽到 1-15 组
+    
     if st.button("一键计算最优组合", type="primary", use_container_width=True):
-        with st.spinner("正在测算..."):
+        with st.spinner("正在 5 万组完美结构号码中测算..."):
             best_singles = calculate_best_singles(tuple(score_df[["号码", "综合分"]].values.tolist()), n_picks)
             
             for i, (gs, reds, blue, penalty) in enumerate(best_singles, 1):
@@ -233,7 +235,7 @@ with tab1:
                 
                 expander_title = f"第{i}名 ｜ {rating} ｜ 评分 {gs} ｜ 红球 {' '.join(f'{x:02d}' for x in reds)} ｜ 蓝球 {blue:02d}"
                 if penalty > 0:
-                    expander_title += f" (-{penalty}分散惩罚)"
+                    expander_title += f" (-{penalty}惩罚)"
                 
                 with st.expander(expander_title, expanded=(i==1)):
                     st.write("**结构分析：**")
@@ -269,14 +271,11 @@ with tab2:
 
 with tab3:
     st.subheader("红球近期热度分布")
-    # 提取近 50 期的频次
     red_freq = {i: 0 for i in range(1, 34)}
     for draw in df["reds"].tolist()[-50:]:
         for r in draw: red_freq[r] += 1
     
-    # 渲染热力图样式
     def color_red_cell(val):
-        # 根据频次计算颜色深浅
         intensity = val / max(red_freq.values())
         color = mcolors.to_hex(plt.cm.Reds(intensity * 0.8 + 0.2)) 
         return f'background-color: {color}'
@@ -284,7 +283,7 @@ with tab3:
     red_heatmap_df = pd.DataFrame([red_freq])
     red_heatmap_df.columns = [f"{i:02d}" for i in range(1, 34)]
     
-    styled_reds = red_heatmap_df.style.applymap(color_red_cell).format("{:.0f}")
+    styled_reds = red_heatmap_df.style.map(color_red_cell).format("{:.0f}")
     st.dataframe(styled_reds, use_container_width=True, height=100)
     st.caption("颜色越深，代表近 50 期出现频次越高（热号）；越浅代表频次越低（冷号）。")
 
@@ -301,8 +300,16 @@ with tab3:
     blue_heatmap_df = pd.DataFrame([blue_freq])
     blue_heatmap_df.columns = [f"{i:02d}" for i in range(1, 17)]
     
-    styled_blues = blue_heatmap_df.style.applymap(color_blue_cell).format("{:.0f}")
+    styled_blues = blue_heatmap_df.style.map(color_blue_cell).format("{:.0f}")
     st.dataframe(styled_blues, use_container_width=True, height=100)
-    st.caption("颜色越深，代表近 50 期出现频次越高。蓝球复式选 1-2 个热号 + 1 个冷号往往有奇效。")
+    st.caption("蓝球选 1-2 个热号 + 1 个冷号往往有奇效。")
+
+with tab4:
+    st.subheader("历史开奖记录")
+    show_n = st.slider("显示最近期数", 10, 300, 50)
+    hist_view = df.tail(show_n).iloc[::-1].copy()
+    hist_view["红球"] = hist_view["reds"].apply(lambda x: " ".join(f"{i:02d}" for i in x))
+    hist_view["蓝球"] = hist_view["blue"].apply(lambda x: f"{x:02d}")
+    st.dataframe(hist_view[["issue", "红球", "蓝球"]].rename(columns={"issue": "期号"}), use_container_width=True, height=400)
 
 st.caption("免责声明：计算基于历史统计结构，不保证中奖，理性购彩。")
