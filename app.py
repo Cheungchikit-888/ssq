@@ -18,6 +18,7 @@ MAX_AMOUNT = 20000
 # ==================== 数据层 ====================
 @st.cache_data(ttl=300)
 def load_history():
+    # 源1：官方
     try:
         url = "https://www.cwl.gov.cn/cwl_admin/front/cwlkj/search/kjxx/findDrawNotice"
         params = {"name": "ssq", "issueCount": 300, "pageNo": 1, "pageSize": 300}
@@ -35,6 +36,7 @@ def load_history():
     except Exception:
         pass
 
+    # 源2：500.com
     try:
         url2 = "https://datachart.500.com/ssq/history/newinc/history.php"
         params2 = {"start": "03001", "end": "99999"}
@@ -60,6 +62,7 @@ def load_history():
     except Exception:
         pass
 
+    # 源3：内置示例
     st.warning("实时数据源暂不可用，使用内置示例数据演示。")
     sample = [[1,5,12,20,25,33,7],[3,8,15,22,28,31,12],[2,9,14,19,26,30,5]]
     rows = [{"issue": f"DEMO{i+1:03d}", "date": "", "reds": r[:6], "blue": r[6]} for i, r in enumerate(sample)]
@@ -128,7 +131,7 @@ blue_score_df = pd.DataFrame({
     "热度": [blue_counts.get(i, 0) for i in range(1, 17)]
 }).sort_values("热度", ascending=False).reset_index(drop=True)
 
-# ==================== 结构分析与打分（核心升级） ====================
+# ==================== 结构分析与打分 ====================
 def structure_analysis(reds):
     s = sum(reds)
     odd = sum(1 for x in reds if x % 2 == 1)
@@ -140,7 +143,6 @@ def structure_analysis(reds):
     span = max(reds) - min(reds)
     consecutive = any(reds[i+1] - reds[i] == 1 for i in range(5))
     
-    # 质数统计
     primes = {2,3,5,7,11,13,17,19,23,29,31}
     prime_count = sum(1 for x in reds if x in primes)
     
@@ -162,19 +164,15 @@ def structure_analysis(reds):
 def get_group_score(reds, score_map):
     checks, passed, zones, consecutive, repeat = structure_analysis(reds)
     
-    # 基础结构分：7项里错1项扣15分
     struct_score = 100 - (7 - passed) * 15
     if passed == 7: struct_score += 5
     
-    # 特殊加分项
-    if zones == [2, 2, 2]: struct_score += 5  # 完美三区
-    if consecutive: struct_score += 5         # 含有连号
+    if zones == [2, 2, 2]: struct_score += 5 
+    if consecutive: struct_score += 5         
     
-    # 号码池质量分
     pool_score = sum(score_map[r] for r in reds) / 6
     total_score = round(struct_score * 0.6 + pool_score * 0.4, 1)
     
-    # 重号惩罚机制
     if repeat == 3:
         total_score -= 5
     elif repeat >= 4:
@@ -188,7 +186,7 @@ def get_rating(score):
     if score >= 70: return "B级 · 良好解 ✅"
     return "C级 · 普通解"
 
-# ==================== 单式最优解测算（软性防重） ====================
+# ==================== 单式最优解测算 ====================
 @st.cache_data(ttl=3600)
 def calculate_best_singles(score_list, n_picks=5):
     score_map = dict(score_list)
@@ -198,7 +196,6 @@ def calculate_best_singles(score_list, n_picks=5):
     while len(candidates) < 60000:
         reds = tuple(sorted(random.sample(range(1, 34), 6)))
         checks, passed, _, _, _ = structure_analysis(reds)
-        # 允许有一项瑕疵的号码进入候选池
         if passed >= 6:  
             candidates.add(reds)
             
@@ -219,7 +216,6 @@ def calculate_best_singles(score_list, n_picks=5):
         valid = True
         overlap_penalty = 0
         
-        # 组间防重合：重2个扣5，重3个扣15，重4个直接淘汰
         for selected in seen_reds:
             overlap_count = len(set(cand) & set(selected))
             if overlap_count >= 4:
@@ -240,11 +236,11 @@ def calculate_best_singles(score_list, n_picks=5):
     return final_picks
 
 # ==================== 界面 ====================
-tab1, tab2, tab3, tab4 = st.tabs(["🎯 最优单式", "📦 最优复式", "🔥 热力图", "📜 历史开奖"])
+tab1, tab2, tab3, tab4 = st.tabs(["🎯 最优单式", "📦 最优复式", "🔥 冷热透视", "📜 历史开奖"])
 
 with tab1:
     st.subheader("测算最优单式")
-    st.caption("已启用【高级规则过滤】：和值收窄 + 质数/三区加分。")
+    st.caption("已启用【高级规则过滤】：和值收窄 + 质数/三区/连号综合加分。")
     n_picks = st.slider("测算前几组", 1, 15, 5)
     
     if st.button("一键计算最优组合", type="primary", use_container_width=True):
@@ -291,11 +287,20 @@ with tab2:
         st.metric("投注金额", f"¥{amount}")
 
 with tab3:
-    st.subheader("红球近期热度分布（近50期）")
+    st.subheader("🔥 红球冷热温透视")
+    
     red_freq = {i: 0 for i in range(1, 34)}
     for draw in df["reds"].tolist()[-50:]:
         for r in draw: red_freq[r] += 1
-    
+        
+    red_miss = {}
+    for num in range(1, 34):
+        cur = 0
+        for d in reversed(df["reds"].tolist()):
+            if num in d: break
+            cur += 1
+        red_miss[num] = cur
+
     def color_red_cell(val):
         intensity = val / max(red_freq.values())
         return f'background-color: {mcolors.to_hex(plt.cm.Reds(intensity * 0.8 + 0.2))}'
@@ -304,11 +309,36 @@ with tab3:
     red_heatmap_df.columns = [f"{i:02d}" for i in range(1, 34)]
     st.dataframe(red_heatmap_df.style.map(color_red_cell).format("{:.0f}"), use_container_width=True, height=100)
 
-    st.subheader("蓝球近期热度分布（近50期）")
+    red_chart_df = pd.DataFrame({
+        "号码": [f"{i:02d}" for i in range(1, 34)],
+        "出现频次": [red_freq[i] for i in range(1, 34)]
+    }).set_index("号码")
+    st.bar_chart(red_chart_df, height=200)
+
+    sorted_reds_hot = sorted(red_freq.items(), key=lambda x: x[1], reverse=True)[:5]
+    sorted_reds_cold = sorted(red_miss.items(), key=lambda x: x[1], reverse=True)[:5]
+    
+    st.write("📈 **近期最活跃热号（前5）：**")
+    st.success(" | ".join([f"{n:02d}号 🔥(出{c}次)" for n, c in sorted_reds_hot]))
+    
+    st.write("🧊 **近期极冷号（遗漏最久前5）：**")
+    st.info(" | ".join([f"{n:02d}号 ❄️(漏{c}期)" for n, c in sorted_reds_cold]))
+
+    st.divider()
+
+    st.subheader("🔥 蓝球冷热温透视")
     blue_freq = {i: 0 for i in range(1, 17)}
     for b in df["blue"].tolist()[-50:]:
         blue_freq[b] += 1
         
+    blue_miss = {}
+    for num in range(1, 17):
+        cur = 0
+        for d in reversed(df["blue"].tolist()):
+            if d == num: break
+            cur += 1
+        blue_miss[num] = cur
+
     def color_blue_cell(val):
         intensity = val / max(blue_freq.values())
         return f'background-color: {mcolors.to_hex(plt.cm.Blues(intensity * 0.8 + 0.2))}'
@@ -316,7 +346,22 @@ with tab3:
     blue_heatmap_df = pd.DataFrame([blue_freq])
     blue_heatmap_df.columns = [f"{i:02d}" for i in range(1, 17)]
     st.dataframe(blue_heatmap_df.style.map(color_blue_cell).format("{:.0f}"), use_container_width=True, height=100)
-    st.caption("颜色越深频次越高。蓝球建议采用“2热+1冷”策略防冷门。")
+
+    blue_chart_df = pd.DataFrame({
+        "蓝球": [f"{i:02d}" for i in range(1, 17)],
+        "出现频次": [blue_freq[i] for i in range(1, 17)]
+    }).set_index("蓝球")
+    st.bar_chart(blue_chart_df, height=200)
+
+    sorted_blues_hot = sorted(blue_freq.items(), key=lambda x: x[1], reverse=True)[:3]
+    sorted_blues_cold = sorted(blue_miss.items(), key=lambda x: x[1], reverse=True)[:3]
+    
+    st.write("📈 **近期最活跃蓝球（前3）：**")
+    st.success(" | ".join([f"{n:02d}号 🔥(出{c}次)" for n, c in sorted_blues_hot]))
+    
+    st.write("🧊 **近期极冷蓝球（遗漏最久前3）：**")
+    st.info(" | ".join([f"{n:02d}号 ❄️(漏{c}期)" for n, c in sorted_blues_cold]))
+    st.caption("💡 蓝球实战建议：采用“2热+1冷”组合买复式，兼顾热号惯性和冷门爆发。")
 
 with tab4:
     st.subheader("历史开奖记录")
