@@ -289,7 +289,7 @@ def calculate_best_singles(score_list, n_picks=5):
     return final_picks
 
 # ==================== 界面 ====================
-tab1, tab2, tab3, tab4 = st.tabs(["🎯 最优单式", "📦 最优复式", "🔥 冷热透视", "📜 历史开奖"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🎯 最优单式", "📦 最优复式", "🔍 号码诊断", "🔥 冷热透视", "📜 历史开奖"])
 
 with tab1:
     st.subheader("测算最优单式")
@@ -364,6 +364,49 @@ with tab2:
         st.caption("提示：复式使用的是【稳健阵型】，核心区配热号，边缘区强制布防冷号。")
 
 with tab3:
+    st.subheader("🔍 我的号码深度诊断")
+    st.caption("输入你的心水号码，用大数据和概率规则为你做一次全面体检。")
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        user_reds = st.multiselect("选择 6 个红球", list(range(1, 34)), max_selections=6, help="最多只能选 6 个")
+    with col2:
+        user_blue = st.selectbox("选择 1 个蓝球", list(range(1, 17)))
+        
+    if st.button("开始诊断", type="primary", use_container_width=True):
+        if len(user_reds) != 6:
+            st.error("⚠️ 请务必选择刚好 6 个红球！")
+        else:
+            user_reds = sorted(user_reds)
+            score_map = dict(score_df[["号码", "综合分"]].values.tolist())
+            gs, checks = get_group_score(user_reds, score_map)
+            rating = get_rating(gs)
+            
+            # 顶部展示结果
+            st.success(f"**综合评级：{rating} ｜ 最终得分：{gs}**")
+            st.markdown(f"**诊断号码：** 红球 {' '.join(f'{x:02d}' for x in user_reds)} ｜ 蓝球 {user_blue:02d}")
+            
+            # 特别警报：冷热均衡检查
+            hot_cnt = sum(1 for x in user_reds if red_tag_dict[x] == "🔥热")
+            warm_cnt = sum(1 for x in user_reds if red_tag_dict[x] == "🌤温")
+            cold_cnt = sum(1 for x in user_reds if red_tag_dict[x] == "❄️冷")
+            
+            if hot_cnt >= 5:
+                st.error("🚨 **极端警报**：你的红球包含 5 个或以上的热号！这极容易变成大众票导致奖金稀释，且容错率极低。")
+            elif cold_cnt >= 3:
+                st.warning("⚠️ **阵型警告**：你的红球包含 3 个或以上的冷号。防守过度，极其依赖爆冷。")
+            elif hot_cnt == 0 or cold_cnt == 0:
+                st.info("💡 **阵型提示**：你的号码缺少活跃的热号或防守的极冷号，冷热温形态略显平庸。")
+            else:
+                st.success("✅ **阵型完美**：你的红球冷热温搭配合理，攻守兼备！")
+                
+            st.divider()
+            
+            # 生成详细报告
+            report = generate_detailed_report(user_reds, user_blue, score_map)
+            st.markdown(report)
+
+with tab4:
     st.subheader("🔥 红球冷热温透视")
     red_freq = {i: 0 for i in range(1, 34)}
     for draw in df["reds"].tolist()[-50:]:
@@ -405,7 +448,7 @@ with tab3:
     blue_chart_df = pd.DataFrame({"蓝球": [f"{i:02d}" for i in range(1, 17)], "出现频次": [blue_freq[i] for i in range(1, 17)]}).set_index("蓝球")
     st.bar_chart(blue_chart_df, height=200)
 
-with tab4:
+with tab5:
     st.subheader("历史开奖记录")
     show_n = st.slider("显示最近期数", 10, 300, 50)
     hist_view = df.tail(show_n).iloc[::-1].copy()
