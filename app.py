@@ -10,7 +10,7 @@ from math import comb
 
 st.set_page_config(page_title="双色球最优解计算器", layout="centered")
 st.title("双色球最优解计算器")
-st.caption("数据级过滤 + 绝对高分优先 + 深度解析。")
+st.caption("数据级过滤 + 绝对高分优先 + 历史规律蓝球推演。")
 
 PER_BET = 2
 MAX_AMOUNT = 20000
@@ -148,6 +148,7 @@ def get_blue_miss(b):
 blue_score_df = pd.DataFrame({"蓝球": range(1, 17), "热度": [blue_counts.get(i, 0) for i in range(1, 17)], "当前遗漏": [get_blue_miss(i) for i in range(1, 17)]})
 blue_score_df["冷热标签"] = blue_score_df["热度"].apply(lambda x: "🔥热" if x >= 5 else ("❄️冷" if x <= 2 else "🌤温"))
 blue_score_df = blue_score_df.sort_values("热度", ascending=False).reset_index(drop=True)
+last_blue_draw = df.iloc[-1]["blue"]
 
 # ==================== 结构分析与打分 ====================
 def structure_analysis(reds):
@@ -183,11 +184,8 @@ def structure_analysis(reds):
 def get_group_score(reds, score_map):
     checks, passed, zones, consecutive, repeat, zone_str = structure_analysis(reds)
     
-    # 基础分
     struct_score = 100 - (7 - passed) * 15
     if passed == 7: struct_score += 5
-    
-    # 只保留连号加分，彻底取消 2:2:2 特权
     if consecutive: struct_score += 5         
     
     pool_score = sum(score_map[r] for r in reds) / 6
@@ -204,6 +202,56 @@ def get_rating(score):
     if score >= 70: return "B级 · 良好解 ✅"
     return "C级 · 普通解"
 
+# ==================== 蓝球智能推荐与解释逻辑 ====================
+def get_blue_reason(blue):
+    b_info = blue_score_df[blue_score_df["蓝球"] == blue].iloc[0]
+    tag = b_info["冷热标签"]
+    miss = b_info["当前遗漏"]
+    
+    if blue == last_blue_draw:
+        return f"重号防守（上期刚开）"
+    
+    neighbors = []
+    if last_blue_draw > 1: neighbors.append(last_blue_draw - 1)
+    if last_blue_draw < 16: neighbors.append(last_blue_draw + 1)
+    if blue in neighbors:
+        return f"邻号策略（紧贴上期开奖号{last_blue_draw:02d}）"
+        
+    if tag == "🔥热":
+        return f"热号延续（出{b_info['热度']}次，保底首选）"
+    elif tag == "❄️冷":
+        return f"极冷防守（已遗漏{miss}期，防爆冷）"
+    else:
+        return f"温号过渡（遗漏{miss}期）"
+
+def recommend_blues(m_blue):
+    hottest = blue_score_df.iloc[0]["蓝球"]
+    
+    neighbors = []
+    if last_blue_draw > 1: neighbors.append(last_blue_draw - 1)
+    if last_blue_draw < 16: neighbors.append(last_blue_draw + 1)
+    neighbor_recommend = None
+    for b in neighbors:
+        if b in blue_score_df.head(8)["蓝球"].tolist():
+            neighbor_recommend = b
+            break
+    if neighbor_recommend is None and neighbors:
+        neighbor_recommend = neighbors[0]
+        
+    coldest = blue_score_df.sort_values("当前遗漏", ascending=False).iloc[0]["蓝球"]
+    warm = blue_score_df[blue_score_df["冷热标签"] == "🌤温"].iloc[0]["蓝球"] if len(blue_score_df[blue_score_df["冷热标签"] == "🌤温"]) > 0 else 2
+
+    full_pool = [hottest]
+    if neighbor_recommend: full_pool.append(neighbor_recommend)
+    if coldest: full_pool.append(coldest)
+    if warm: full_pool.append(warm)
+    
+    for b in blue_score_df["蓝球"].tolist():
+        if b not in full_pool:
+            full_pool.append(b)
+            
+    return full_pool[:m_blue], "按热度、邻号、冷号优先级依次分配"
+
 def generate_detailed_report(reds, blue, score_map):
     checks, passed, zones, consecutive, repeat, zone_str = structure_analysis(reds)
     red_details = []
@@ -215,9 +263,8 @@ def generate_detailed_report(reds, blue, score_map):
         prime_tag = "(质)" if r in primes else ""
         red_details.append(f"**{r:02d}**{prime_tag}: 评{score_map[r]}, 出{freq}次, 漏{miss}期 [{tag}]")
         
-    b_info = blue_score_df[blue_score_df["蓝球"] == blue].iloc[0]
-    b_tag = b_info["冷热标签"]
-    blue_detail = f"**{blue:02d}**号: 出{b_info['热度']}次, 漏{b_info['当前遗漏']}期 [{b_tag}]"
+    b_reason = get_blue_reason(blue)
+    blue_detail = f"**{blue:02d}**号: {b_reason}"
 
     report = "### 🔍 数据体检报告\n"
     report += "**1. 成分解析：**\n"
@@ -230,7 +277,7 @@ def generate_detailed_report(reds, blue, score_map):
     if consecutive: report += "- 🌟 **连号加成**: 包含连号\n"
     return report
 
-# ==================== 单式最优解测算（绝对高分优先） ====================
+# ==================== 单式最优解测算 ====================
 @st.cache_data(ttl=3600)
 def calculate_best_singles(score_list, n_picks=5):
     score_map = dict(score_list)
@@ -254,35 +301,18 @@ def calculate_best_singles(score_list, n_picks=5):
         sc, _, z_str = get_group_score(cand, score_map)
         scored_cands.append((sc, list(cand), z_str))
             
-    # 【绝对分数优先】：直接按真实评分从高到低排
     scored_cands.sort(key=lambda x: x[0], reverse=True)
     
     final_picks = []
     seen_reds = []
     
-    hot_blues = blue_score_df[blue_score_df["冷热标签"] == "🔥热"]["蓝球"].tolist()
-    warm_blues = blue_score_df[blue_score_df["冷热标签"] == "🌤温"]["蓝球"].tolist()
-    cold_blues = blue_score_df[blue_score_df["冷热标签"] == "❄️冷"]["蓝球"].tolist()
-    
-    blue_pool = []
-    if n_picks <= 2:
-        blue_pool = hot_blues.copy()
-        if len(blue_pool) < n_picks: blue_pool.extend(warm_blues)
-        if len(blue_pool) < n_picks: blue_pool.extend(cold_blues)
-    else:
-        for i in range(6):
-            if i < 2 and len(hot_blues) > 0: blue_pool.append(hot_blues[i % len(hot_blues)])
-            if 2 <= i < 4 and len(warm_blues) > 0: blue_pool.append(warm_blues[(i-2) % len(warm_blues)])
-            if 4 <= i < 5 and len(cold_blues) > 0: blue_pool.append(cold_blues[(i-4) % len(cold_blues)])
-            
-    if not blue_pool: blue_pool = [1, 2, 3, 4, 5]
+    b_pool, _ = recommend_blues(16) 
     blue_idx = 0
     
     for base_sc, cand, z_str in scored_cands:
         if len(final_picks) >= n_picks: break
         
         valid = True
-        # 唯一限制：防止多注之间红球过度重合（不能有3个以上一样），确保覆盖面
         for selected in seen_reds:
             overlap_count = len(set(cand) & set(selected))
             if overlap_count >= 3:
@@ -290,8 +320,9 @@ def calculate_best_singles(score_list, n_picks=5):
                 break
         
         if valid:
-            blue = int(blue_pool[blue_idx % len(blue_pool)])
-            final_picks.append((base_sc, cand, blue, z_str))
+            blue = b_pool[blue_idx % len(b_pool)]
+            blue_reason = get_blue_reason(blue)
+            final_picks.append((base_sc, cand, blue, z_str, blue_reason))
             seen_reds.append(cand)
             blue_idx += 1
             
@@ -302,7 +333,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["🎯 最优单式", "📦 最优复式"
 
 with tab1:
     st.subheader("测算最优单式")
-    st.caption("已回归【绝对高分优先】：不为了凑形态牺牲评分，纯凭结构实力说话。")
+    st.caption("已回归【绝对高分优先】：蓝球根据历史规律自动分配（热、邻、冷、温）。")
     n_picks = st.slider("测算前几组", 1, 15, 5)
     
     if st.button("一键计算最优组合", type="primary", use_container_width=True):
@@ -310,10 +341,12 @@ with tab1:
             best_singles = calculate_best_singles(tuple(score_df[["号码", "综合分"]].values.tolist()), n_picks)
             score_map = dict(score_df[["号码", "综合分"]].values.tolist())
             
-            for i, (gs, reds, blue, z_str) in enumerate(best_singles, 1):
+            for i, (gs, reds, blue, z_str, blue_reason) in enumerate(best_singles, 1):
                 rating = get_rating(gs)
                 title = f"第{i}名 ｜ {rating} ｜ 评分 {gs} ｜ 形态 {z_str} ｜ 红球 {' '.join(f'{x:02d}' for x in reds)} ｜ 蓝球 {blue:02d}"
                 with st.expander(title, expanded=(i==1)):
+                    st.markdown(f"💡 **蓝球分配逻辑：** {blue_reason}")
+                    st.divider()
                     st.markdown(generate_detailed_report(reds, blue, score_map))
 
 with tab2:
@@ -338,8 +371,8 @@ with tab2:
         else:
             best_reds = sorted(top_reds["号码"].tolist())
             
-        best_blues = sorted(blue_score_df.head(m_blue)["蓝球"].tolist())
-        
+        best_blues, blue_logic = recommend_blues(m_blue)
+
         top6 = best_reds[:6]
         score_map = dict(score_df[["号码", "综合分"]].values.tolist())
         gs, checks, z_str = get_group_score(top6, score_map)
@@ -349,6 +382,7 @@ with tab2:
         
         st.info(f"**推荐红球：** {' '.join(f'{x:02d}' for x in best_reds)}")
         st.info(f"**推荐蓝球：** {' '.join(f'{x:02d}' for x in best_blues)}")
+        st.caption(f"💡 **选蓝逻辑**：{blue_logic}")
         
         st.markdown(f"### 方案评分：{gs} （形态 {z_str}，以核心前6个测算）")
         st.metric("组合注数", f"{bets} 注")
@@ -363,6 +397,12 @@ with tab2:
             tag = red_tag_dict[r]
             red_details.append(f"**{r:02d}**: 评{score_map[r]}, 出{freq}次, 漏{miss}期 [{tag}]")
         st.markdown("  \n".join(red_details))
+        
+        blue_details = []
+        for b in best_blues:
+            b_reason = get_blue_reason(b)
+            blue_details.append(f"**蓝球 {b:02d}**: {b_reason}")
+        st.markdown("  \n".join(blue_details))
 
 with tab3:
     st.subheader("🔍 我的号码深度诊断")
@@ -435,6 +475,13 @@ with tab3:
                     tag = red_tag_dict[r]
                     red_details.append(f"**{r:02d}**: 评{score_map[r]}, 出{freq}次, 漏{miss}期 [{tag}]")
                 st.markdown("  \n".join(red_details))
+                
+                st.markdown("### 🔵 蓝球池剖析")
+                blue_details = []
+                for b in user_blues:
+                    b_reason = get_blue_reason(b)
+                    blue_details.append(f"**蓝球 {b:02d}**: {b_reason}")
+                st.markdown("  \n".join(blue_details))
 
 with tab4:
     st.subheader("🔥 红球冷热温透视")
@@ -477,6 +524,14 @@ with tab4:
 
     blue_chart_df = pd.DataFrame({"蓝球": [f"{i:02d}" for i in range(1, 17)], "出现频次": [blue_freq[i] for i in range(1, 17)]}).set_index("蓝球")
     st.bar_chart(blue_chart_df, height=200)
+
+    sorted_blues_hot = sorted(blue_freq.items(), key=lambda x: x[1], reverse=True)[:3]
+    sorted_blues_cold = sorted(blue_miss.items(), key=lambda x: x[1], reverse=True)[:3]
+    
+    st.write("📈 **近期最活跃蓝球（前3）：**")
+    st.success(" | ".join([f"{n:02d}号 🔥(出{c}次)" for n, c in sorted_blues_hot]))
+    st.write("🧊 **近期极冷蓝球（遗漏最久前3）：**")
+    st.info(" | ".join([f"{n:02d}号 ❄️(漏{c}期)" for n, c in sorted_blues_cold]))
 
 with tab5:
     st.subheader("历史开奖记录")
