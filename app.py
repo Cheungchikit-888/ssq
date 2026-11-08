@@ -10,7 +10,7 @@ from math import comb
 
 st.set_page_config(page_title="双色球最优解计算器", layout="centered")
 st.title("双色球最优解计算器")
-st.caption("数据级过滤废号 + 冷热温强制均衡 + 深度数据解析。")
+st.caption("数据级过滤 + 绝对高分优先 + 深度解析。")
 
 PER_BET = 2
 MAX_AMOUNT = 20000
@@ -158,6 +158,9 @@ def structure_analysis(reds):
         if x <= 11: zones[0] += 1
         elif x <= 22: zones[1] += 1
         else: zones[2] += 1
+    
+    zone_str = ":".join(map(str, sorted(zones, reverse=True)))
+    
     span = max(reds) - min(reds)
     consecutive = any(reds[i+1] - reds[i] == 1 for i in range(5))
     primes = {2,3,5,7,11,13,17,19,23,29,31}
@@ -175,20 +178,25 @@ def structure_analysis(reds):
         ("重号", repeat, repeat <= 2, f"重号{repeat}个"),
     ]
     passed = sum(1 for _, _, ok, _ in checks if ok)
-    return checks, passed, zones, consecutive, repeat
+    return checks, passed, zones, consecutive, repeat, zone_str
 
 def get_group_score(reds, score_map):
-    checks, passed, zones, consecutive, repeat = structure_analysis(reds)
+    checks, passed, zones, consecutive, repeat, zone_str = structure_analysis(reds)
+    
+    # 基础分
     struct_score = 100 - (7 - passed) * 15
     if passed == 7: struct_score += 5
-    if zones == [2, 2, 2]: struct_score += 5 
+    
+    # 只保留连号加分，彻底取消 2:2:2 特权
     if consecutive: struct_score += 5         
     
     pool_score = sum(score_map[r] for r in reds) / 6
     total_score = round(struct_score * 0.6 + pool_score * 0.4, 1)
+    
     if repeat == 3: total_score -= 5
     elif repeat >= 4: total_score -= 15
-    return min(max(total_score, 0), 99.9), checks
+    
+    return min(max(total_score, 0), 99.9), checks, zone_str
 
 def get_rating(score):
     if score >= 85: return "S级 · 极优解 🌟"
@@ -197,7 +205,7 @@ def get_rating(score):
     return "C级 · 普通解"
 
 def generate_detailed_report(reds, blue, score_map):
-    checks, passed, zones, consecutive, repeat = structure_analysis(reds)
+    checks, passed, zones, consecutive, repeat, zone_str = structure_analysis(reds)
     red_details = []
     primes = {2,3,5,7,11,13,17,19,23,29,31}
     for r in reds:
@@ -219,11 +227,10 @@ def generate_detailed_report(reds, blue, score_map):
     for name, val, ok, desc in checks:
         icon = "✅" if ok else "⚠️"
         report += f"- {icon} **{name}**: {desc}\n"
-    if zones == [2, 2, 2]: report += "- 🌟 **完美区间**: 2:2:2 分布\n"
     if consecutive: report += "- 🌟 **连号加成**: 包含连号\n"
     return report
 
-# ==================== 单式最优解测算 ====================
+# ==================== 单式最优解测算（绝对高分优先） ====================
 @st.cache_data(ttl=3600)
 def calculate_best_singles(score_list, n_picks=5):
     score_map = dict(score_list)
@@ -234,7 +241,7 @@ def calculate_best_singles(score_list, n_picks=5):
     while len(candidates) < 60000 and attempts < 150000:
         attempts += 1
         reds = tuple(sorted(random.sample(range(1, 34), 6)))
-        checks, passed, _, _, _ = structure_analysis(reds)
+        checks, passed, _, _, _, _ = structure_analysis(reds)
         
         if passed >= 6:  
             hot_cnt = sum(1 for x in reds if red_tag_dict[x] == "🔥热")
@@ -244,9 +251,10 @@ def calculate_best_singles(score_list, n_picks=5):
             
     scored_cands = []
     for cand in candidates:
-        sc, _ = get_group_score(cand, score_map)
-        scored_cands.append((sc, list(cand)))
+        sc, _, z_str = get_group_score(cand, score_map)
+        scored_cands.append((sc, list(cand), z_str))
             
+    # 【绝对分数优先】：直接按真实评分从高到低排
     scored_cands.sort(key=lambda x: x[0], reverse=True)
     
     final_picks = []
@@ -270,10 +278,11 @@ def calculate_best_singles(score_list, n_picks=5):
     if not blue_pool: blue_pool = [1, 2, 3, 4, 5]
     blue_idx = 0
     
-    for base_sc, cand in scored_cands:
+    for base_sc, cand, z_str in scored_cands:
         if len(final_picks) >= n_picks: break
         
         valid = True
+        # 唯一限制：防止多注之间红球过度重合（不能有3个以上一样），确保覆盖面
         for selected in seen_reds:
             overlap_count = len(set(cand) & set(selected))
             if overlap_count >= 3:
@@ -282,7 +291,7 @@ def calculate_best_singles(score_list, n_picks=5):
         
         if valid:
             blue = int(blue_pool[blue_idx % len(blue_pool)])
-            final_picks.append((base_sc, cand, blue))
+            final_picks.append((base_sc, cand, blue, z_str))
             seen_reds.append(cand)
             blue_idx += 1
             
@@ -293,7 +302,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["🎯 最优单式", "📦 最优复式"
 
 with tab1:
     st.subheader("测算最优单式")
-    st.caption("严格执行【2热+2温+2冷/3热+2温+1冷】均衡法则，规避极端组合。")
+    st.caption("已回归【绝对高分优先】：不为了凑形态牺牲评分，纯凭结构实力说话。")
     n_picks = st.slider("测算前几组", 1, 15, 5)
     
     if st.button("一键计算最优组合", type="primary", use_container_width=True):
@@ -301,9 +310,9 @@ with tab1:
             best_singles = calculate_best_singles(tuple(score_df[["号码", "综合分"]].values.tolist()), n_picks)
             score_map = dict(score_df[["号码", "综合分"]].values.tolist())
             
-            for i, (gs, reds, blue) in enumerate(best_singles, 1):
+            for i, (gs, reds, blue, z_str) in enumerate(best_singles, 1):
                 rating = get_rating(gs)
-                title = f"第{i}名 ｜ {rating} ｜ 评分 {gs} ｜ 红球 {' '.join(f'{x:02d}' for x in reds)} ｜ 蓝球 {blue:02d}"
+                title = f"第{i}名 ｜ {rating} ｜ 评分 {gs} ｜ 形态 {z_str} ｜ 红球 {' '.join(f'{x:02d}' for x in reds)} ｜ 蓝球 {blue:02d}"
                 with st.expander(title, expanded=(i==1)):
                     st.markdown(generate_detailed_report(reds, blue, score_map))
 
@@ -333,7 +342,7 @@ with tab2:
         
         top6 = best_reds[:6]
         score_map = dict(score_df[["号码", "综合分"]].values.tolist())
-        gs, checks = get_group_score(top6, score_map)
+        gs, checks, z_str = get_group_score(top6, score_map)
         
         bets = comb(n_red, 6) * m_blue
         amount = bets * PER_BET
@@ -341,7 +350,7 @@ with tab2:
         st.info(f"**推荐红球：** {' '.join(f'{x:02d}' for x in best_reds)}")
         st.info(f"**推荐蓝球：** {' '.join(f'{x:02d}' for x in best_blues)}")
         
-        st.markdown(f"### 方案评分：{gs} （以核心前6个测算）")
+        st.markdown(f"### 方案评分：{gs} （形态 {z_str}，以核心前6个测算）")
         st.metric("组合注数", f"{bets} 注")
         st.metric("投注金额", f"¥{amount}")
         
@@ -354,57 +363,78 @@ with tab2:
             tag = red_tag_dict[r]
             red_details.append(f"**{r:02d}**: 评{score_map[r]}, 出{freq}次, 漏{miss}期 [{tag}]")
         st.markdown("  \n".join(red_details))
-        
-        blue_details = []
-        for b in best_blues:
-            b_info = blue_score_df[blue_score_df["蓝球"] == b].iloc[0]
-            b_tag = b_info["冷热标签"]
-            blue_details.append(f"**蓝球 {b:02d}**: 出{b_info['热度']}次, 漏{b_info['当前遗漏']}期 [{b_tag}]")
-        st.markdown("  \n".join(blue_details))
-        st.caption("提示：复式使用的是【稳健阵型】，核心区配热号，边缘区强制布防冷号。")
 
 with tab3:
     st.subheader("🔍 我的号码深度诊断")
-    st.caption("输入你的心水号码，用大数据和概率规则为你做一次全面体检。")
+    st.caption("支持单式与复式体检，为你输入的号码进行冷热温与结构评估。")
     
     col1, col2 = st.columns([2, 1])
     with col1:
-        user_reds = st.multiselect("选择 6 个红球", list(range(1, 34)), max_selections=6, help="最多只能选 6 个")
+        user_reds = st.multiselect("选择红球（6个为单式，大于6个为复式）", list(range(1, 34)), default=[1, 7, 12, 18, 24, 30])
     with col2:
-        user_blue = st.selectbox("选择 1 个蓝球", list(range(1, 17)))
+        user_blues = st.multiselect("选择蓝球（1个为单式，大于1个为蓝复式）", list(range(1, 17)), default=[7])
         
     if st.button("开始诊断", type="primary", use_container_width=True):
-        if len(user_reds) != 6:
-            st.error("⚠️ 请务必选择刚好 6 个红球！")
+        if len(user_reds) < 6 or len(user_blues) < 1:
+            st.error("⚠️ 红球至少需要 6 个，蓝球至少需要 1 个！")
         else:
             user_reds = sorted(user_reds)
+            user_blues = sorted(user_blues)
+            n_red, m_blue = len(user_reds), len(user_blues)
+            
+            bets = comb(n_red, 6) * m_blue
+            amount = bets * PER_BET
             score_map = dict(score_df[["号码", "综合分"]].values.tolist())
-            gs, checks = get_group_score(user_reds, score_map)
-            rating = get_rating(gs)
             
-            # 顶部展示结果
-            st.success(f"**综合评级：{rating} ｜ 最终得分：{gs}**")
-            st.markdown(f"**诊断号码：** 红球 {' '.join(f'{x:02d}' for x in user_reds)} ｜ 蓝球 {user_blue:02d}")
+            st.info(f"**当前配置：** {n_red}红 + {m_blue}蓝 ｜ **总注数：** {bets} 注 ｜ **总金额：** ¥{amount}")
             
-            # 特别警报：冷热均衡检查
             hot_cnt = sum(1 for x in user_reds if red_tag_dict[x] == "🔥热")
             warm_cnt = sum(1 for x in user_reds if red_tag_dict[x] == "🌤温")
             cold_cnt = sum(1 for x in user_reds if red_tag_dict[x] == "❄️冷")
             
-            if hot_cnt >= 5:
-                st.error("🚨 **极端警报**：你的红球包含 5 个或以上的热号！这极容易变成大众票导致奖金稀释，且容错率极低。")
-            elif cold_cnt >= 3:
-                st.warning("⚠️ **阵型警告**：你的红球包含 3 个或以上的冷号。防守过度，极其依赖爆冷。")
-            elif hot_cnt == 0 or cold_cnt == 0:
-                st.info("💡 **阵型提示**：你的号码缺少活跃的热号或防守的极冷号，冷热温形态略显平庸。")
-            else:
-                st.success("✅ **阵型完美**：你的红球冷热温搭配合理，攻守兼备！")
+            if n_red == 6 and m_blue == 1:
+                gs, checks, z_str = get_group_score(user_reds, score_map)
+                rating = get_rating(gs)
+                st.success(f"**综合评级：{rating} ｜ 最终得分：{gs} ｜ 形态：{z_str}**")
                 
-            st.divider()
-            
-            # 生成详细报告
-            report = generate_detailed_report(user_reds, user_blue, score_map)
-            st.markdown(report)
+                if hot_cnt >= 5:
+                    st.error("🚨 **极端警报**：红球热号过多，容易撞车。")
+                elif cold_cnt >= 3:
+                    st.warning("⚠️ **阵型警告**：红球冷号过多，极其依赖爆冷。")
+                else:
+                    st.success("✅ **阵型完美**：冷热温搭配合理。")
+                    
+                st.divider()
+                st.markdown(generate_detailed_report(user_reds, user_blues[0], score_map))
+            else:
+                core_reds = sorted(score_df[score_df["号码"].isin(user_reds)].head(6)["号码"].tolist())
+                core_score, checks, z_str = get_group_score(core_reds, score_map)
+                
+                breadth_score = core_score
+                zones_covered = len(set([1 if x <= 11 else (2 if x <= 22 else 3) for x in user_reds]))
+                if zones_covered == 3: breadth_score += 2
+                if hot_cnt > 0 and warm_cnt > 0 and cold_cnt > 0: breadth_score += 3
+                breadth_score = min(breadth_score, 99.9)
+                
+                rating = get_rating(breadth_score)
+                st.success(f"**复式综合评级：{rating} ｜ 综合得分：{round(breadth_score, 1)}**")
+                
+                if hot_cnt >= n_red * 0.7:
+                    st.error("🚨 **极端警报**：你的红球池中热号占比过高。")
+                elif hot_cnt == 0 or cold_cnt == 0:
+                    st.info("💡 **阵型提示**：红球池缺少冷号防守或热号主攻。")
+                else:
+                    st.success("✅ **阵型完美**：红球池冷热温分布极佳。")
+                
+                st.divider()
+                st.markdown("### 🔍 复式池成分剖析")
+                red_details = []
+                for r in user_reds:
+                    freq = int(score_df[score_df["号码"] == r]["近50期频次"].values[0])
+                    miss = int(score_df[score_df["号码"] == r]["当前遗漏"].values[0])
+                    tag = red_tag_dict[r]
+                    red_details.append(f"**{r:02d}**: 评{score_map[r]}, 出{freq}次, 漏{miss}期 [{tag}]")
+                st.markdown("  \n".join(red_details))
 
 with tab4:
     st.subheader("🔥 红球冷热温透视")
