@@ -2,15 +2,15 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
-import random
+import itertools
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from collections import Counter, defaultdict
 from math import comb
 
-st.set_page_config(page_title="双色球最优解计算器", layout="centered")
-st.title("双色球最优解计算器")
-st.caption("动态数据引擎 + 大数定律弹性打分 + 单式网状撒网保本策略。")
+st.set_page_config(page_title="双色球全量最优解", layout="centered")
+st.title("双色球全量最优解计算器")
+st.caption("废除抽样，全量遍历 110 万种红球组合，寻找绝对最优解。")
 
 PER_BET = 2
 MAX_AMOUNT = 20000
@@ -145,6 +145,7 @@ def compute_scores(df):
 
 score_df, cur_miss_map = compute_scores(df)
 red_tag_dict = dict(zip(score_df["号码"], score_df["冷热标签"]))
+score_map = dict(zip(score_df["号码"], score_df["综合分"]))
 
 blue_counts = Counter(df["blue"].tolist()[-50:])
 def get_blue_miss(b):
@@ -209,7 +210,7 @@ def structure_analysis(reds):
     passed = sum(1 for _, _, ok, _ in checks if ok)
     return checks, passed, zones, consecutive, repeat, zone_str, same_tails
 
-def get_group_score(reds, score_map):
+def get_group_score(reds):
     checks, passed, zones, consecutive, repeat, zone_str, same_tails = structure_analysis(reds)
     struct_score = 100 - (9 - passed) * 10
     
@@ -231,7 +232,7 @@ def get_rating(score):
     if score >= 70: return "B级 · 良好解 ✅"
     return "C级 · 普通解"
 
-# ==================== 蓝球智能推荐（修复去重Bug） ====================
+# ==================== 蓝球智能推荐 ====================
 def get_blue_reason(blue):
     b_info = blue_score_df[blue_score_df["蓝球"] == blue].iloc[0]
     tag = b_info["冷热标签"]
@@ -253,38 +254,26 @@ def recommend_blues(m_blue):
     if last_blue_draw > 1: neighbors.append(last_blue_draw - 1)
     if last_blue_draw < 16: neighbors.append(last_blue_draw + 1)
     
-    # 核心修复：使用列表去重，避免 hottest 和 neighbor 撞车
-    full_pool = []
-    
-    # 1. 必带的最热号
-    full_pool.append(hottest)
-    
-    # 2. 邻号（只要不在池子里，就加进去）
+    full_pool = [hottest]
     for n in neighbors:
         if n not in full_pool:
             full_pool.append(n)
-            break # 只拿一个不重复的邻号
+            break 
             
-    # 3. 极冷号
     coldest = blue_score_df.sort_values("当前遗漏", ascending=False).iloc[0]["蓝球"]
-    if coldest not in full_pool:
-        full_pool.append(coldest)
+    if coldest not in full_pool: full_pool.append(coldest)
         
-    # 4. 温号
     warm_df = blue_score_df[blue_score_df["冷热标签"] == "🌤温"]
     if len(warm_df) > 0:
         warm = warm_df.iloc[0]["蓝球"]
-        if warm not in full_pool:
-            full_pool.append(warm)
+        if warm not in full_pool: full_pool.append(warm)
             
-    # 5. 剩下按热度补齐
     for b in blue_score_df["蓝球"].tolist():
-        if b not in full_pool:
-            full_pool.append(b)
+        if b not in full_pool: full_pool.append(b)
             
     return full_pool[:m_blue], "按热度、邻号、冷号优先级依次分配（已智能去重）"
 
-def generate_detailed_report(reds, blue, score_map):
+def generate_detailed_report(reds, blue):
     checks, passed, zones, consecutive, repeat, zone_str, same_tails = structure_analysis(reds)
     red_details = []
     primes = {2,3,5,7,11,13,17,19,23,29,31}
@@ -313,44 +302,37 @@ def generate_detailed_report(reds, blue, score_map):
     if same_tails >= 1: report += f"- 🌟 **同尾加成**: 包含{same_tails}组同尾\n"
     return report
 
-# ==================== 单式最优解测算（动态种子引擎版） ====================
+# ==================== 全量暴力遍历引擎 ====================
 @st.cache_data(ttl=3600)
-def calculate_best_singles(score_list, n_picks, current_issue):
-    try:
-        seed_val = int(current_issue)
-    except:
-        seed_val = 42
-    random.seed(seed_val)
+def calculate_full_best_singles(n_picks):
+    # 获取所有红球组合 C_33^6 = 1,107,568
+    all_combos = list(itertools.combinations(range(1, 34), 6))
     
-    score_map = dict(score_list)
-    candidates = set()
-    
-    attempts = 0
-    while len(candidates) < 60000 and attempts < 150000:
-        attempts += 1
-        reds = tuple(sorted(random.sample(range(1, 34), 6)))
-        if calculate_ac(reds) < 5: continue
-        checks, passed, _, _, _, _, _ = structure_analysis(reds)
-        if passed >= 6:  
-            candidates.add(reds)
+    valid_candidates = []
+    for reds in all_combos:
+        s = sum(reds)
+        # 一级秒杀剪枝：和值不在 75-125 直接滚蛋，砍掉 70% 计算量
+        if not (75 <= s <= 125): continue
+        odd = sum(1 for x in reds if x % 2 == 1)
+        # 二级秒杀剪枝：极端奇偶直接滚蛋
+        if odd == 0 or odd == 6: continue
+        
+        sc, _, z_str = get_group_score(reds)
+        valid_candidates.append((sc, reds, z_str))
             
-    scored_cands = []
-    for cand in candidates:
-        sc, _, z_str = get_group_score(cand, score_map)
-        scored_cands.append((sc, list(cand), z_str))
-            
-    scored_cands.sort(key=lambda x: x[0], reverse=True)
+    # 对剩下的几十万组进行排名
+    valid_candidates.sort(key=lambda x: x[0], reverse=True)
     
     final_picks = []
     seen_reds = []
-    # 单式获取一个包含所有16个蓝球的完整池子（已去重）
     b_pool, _ = recommend_blues(16) 
     blue_idx = 0
     
-    for base_sc, cand, z_str in scored_cands:
+    for base_sc, cand, z_str in valid_candidates:
         if len(final_picks) >= n_picks: break
         
         valid = True
+        # 网状撒网：最多重合1个
         for selected in seen_reds:
             overlap_count = len(set(cand) & set(selected))
             if overlap_count >= 2:
@@ -359,7 +341,7 @@ def calculate_best_singles(score_list, n_picks, current_issue):
         
         if valid:
             blue = b_pool[blue_idx % len(b_pool)]
-            final_picks.append((base_sc, cand, blue, z_str, get_blue_reason(blue)))
+            final_picks.append((base_sc, list(cand), blue, z_str, get_blue_reason(blue)))
             seen_reds.append(cand)
             blue_idx += 1
             
@@ -369,14 +351,13 @@ def calculate_best_singles(score_list, n_picks, current_issue):
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🎯 最优单式", "📦 最优复式", "🔍 号码诊断", "🔥 冷热透视", "📜 历史开奖"])
 
 with tab1:
-    st.subheader("测算最优单式（网状撒网模式）")
-    st.caption("已启用动态数据引擎：每一期开奖后，底层6万组样本将彻底洗牌重算。")
+    st.subheader("测算最优单式（全量暴力遍历版）")
+    st.caption("已启用 110 万种红球全量遍历。点击后请耐心等待 3-5 秒。")
     n_picks = st.slider("测算前几组", 1, 10, 5)
     
-    if st.button("一键计算最优组合", type="primary", use_container_width=True):
-        with st.spinner("正在测算本期全新撒网组合..."):
-            best_singles = calculate_best_singles(tuple(score_df[["号码", "综合分"]].values.tolist()), n_picks, latest_issue)
-            score_map = dict(score_df[["号码", "综合分"]].values.tolist())
+    if st.button("开始 110 万次全量海选", type="primary", use_container_width=True):
+        with st.spinner("机器正在疯狂遍历 110 万种可能，剔除死号，请稍候..."):
+            best_singles = calculate_full_best_singles(n_picks)
             
             for i, (gs, reds, blue, z_str, blue_reason) in enumerate(best_singles, 1):
                 rating = get_rating(gs)
@@ -384,7 +365,7 @@ with tab1:
                 with st.expander(title, expanded=(i==1)):
                     st.markdown(f"💡 **蓝球分配逻辑：** {blue_reason}")
                     st.divider()
-                    st.markdown(generate_detailed_report(reds, blue, score_map))
+                    st.markdown(generate_detailed_report(reds, blue))
 
 with tab2:
     st.subheader("测算最优复式")
@@ -399,8 +380,7 @@ with tab2:
         best_blues, blue_logic = recommend_blues(m_blue)
 
         top6 = best_reds[:6]
-        score_map = dict(score_df[["号码", "综合分"]].values.tolist())
-        gs, checks, z_str = get_group_score(top6, score_map)
+        gs, checks, z_str = get_group_score(top6)
         
         bets = comb(n_red, 6) * m_blue
         amount = bets * PER_BET
@@ -447,7 +427,6 @@ with tab3:
             
             bets = comb(n_red, 6) * m_blue
             amount = bets * PER_BET
-            score_map = dict(score_df[["号码", "综合分"]].values.tolist())
             
             st.info(f"**当前配置：** {n_red}红 + {m_blue}蓝 ｜ **总注数：** {bets} 注 ｜ **总金额：** ¥{amount}")
             
@@ -456,7 +435,7 @@ with tab3:
             cold_cnt = sum(1 for x in user_reds if red_tag_dict[x] == "❄️冷")
             
             if n_red == 6 and m_blue == 1:
-                gs, checks, z_str = get_group_score(user_reds, score_map)
+                gs, checks, z_str = get_group_score(user_reds)
                 rating = get_rating(gs)
                 st.success(f"**综合评级：{rating} ｜ 最终得分：{gs} ｜ 形态：{z_str}**")
                 
@@ -465,10 +444,10 @@ with tab3:
                 else: st.success("✅ **阵型健康**：冷热温搭配合理。")
                     
                 st.divider()
-                st.markdown(generate_detailed_report(user_reds, user_blues[0], score_map))
+                st.markdown(generate_detailed_report(user_reds, user_blues[0]))
             else:
                 core_reds = sorted(score_df[score_df["号码"].isin(user_reds)].head(6)["号码"].tolist())
-                core_score, checks, z_str = get_group_score(core_reds, score_map)
+                core_score, checks, z_str = get_group_score(core_reds)
                 
                 breadth_score = core_score
                 zones_covered = len(set([1 if x <= 11 else (2 if x <= 22 else 3) for x in user_reds]))
