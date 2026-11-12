@@ -231,7 +231,7 @@ def get_rating(score):
     if score >= 70: return "B级 · 良好解 ✅"
     return "C级 · 普通解"
 
-# ==================== 蓝球智能推荐 ====================
+# ==================== 蓝球智能推荐（修复去重Bug） ====================
 def get_blue_reason(blue):
     b_info = blue_score_df[blue_score_df["蓝球"] == blue].iloc[0]
     tag = b_info["冷热标签"]
@@ -253,17 +253,36 @@ def recommend_blues(m_blue):
     if last_blue_draw > 1: neighbors.append(last_blue_draw - 1)
     if last_blue_draw < 16: neighbors.append(last_blue_draw + 1)
     
-    neighbor_recommend = next((b for b in neighbors if b in blue_score_df.head(8)["蓝球"].tolist()), neighbors[0] if neighbors else None)
+    # 核心修复：使用列表去重，避免 hottest 和 neighbor 撞车
+    full_pool = []
+    
+    # 1. 必带的最热号
+    full_pool.append(hottest)
+    
+    # 2. 邻号（只要不在池子里，就加进去）
+    for n in neighbors:
+        if n not in full_pool:
+            full_pool.append(n)
+            break # 只拿一个不重复的邻号
+            
+    # 3. 极冷号
     coldest = blue_score_df.sort_values("当前遗漏", ascending=False).iloc[0]["蓝球"]
-    warm = blue_score_df[blue_score_df["冷热标签"] == "🌤温"].iloc[0]["蓝球"] if len(blue_score_df[blue_score_df["冷热标签"] == "🌤温"]) > 0 else 2
-
-    full_pool = [hottest]
-    if neighbor_recommend: full_pool.append(neighbor_recommend)
-    if coldest: full_pool.append(coldest)
-    if warm: full_pool.append(warm)
+    if coldest not in full_pool:
+        full_pool.append(coldest)
+        
+    # 4. 温号
+    warm_df = blue_score_df[blue_score_df["冷热标签"] == "🌤温"]
+    if len(warm_df) > 0:
+        warm = warm_df.iloc[0]["蓝球"]
+        if warm not in full_pool:
+            full_pool.append(warm)
+            
+    # 5. 剩下按热度补齐
     for b in blue_score_df["蓝球"].tolist():
-        if b not in full_pool: full_pool.append(b)
-    return full_pool[:m_blue], "按热度、邻号、冷号优先级依次分配"
+        if b not in full_pool:
+            full_pool.append(b)
+            
+    return full_pool[:m_blue], "按热度、邻号、冷号优先级依次分配（已智能去重）"
 
 def generate_detailed_report(reds, blue, score_map):
     checks, passed, zones, consecutive, repeat, zone_str, same_tails = structure_analysis(reds)
@@ -297,11 +316,10 @@ def generate_detailed_report(reds, blue, score_map):
 # ==================== 单式最优解测算（动态种子引擎版） ====================
 @st.cache_data(ttl=3600)
 def calculate_best_singles(score_list, n_picks, current_issue):
-    # 【核心修复】：使用动态期号作为随机种子，打破之前的固话池子
     try:
         seed_val = int(current_issue)
     except:
-        seed_val = 42 # 容错兜底
+        seed_val = 42
     random.seed(seed_val)
     
     score_map = dict(score_list)
@@ -325,6 +343,7 @@ def calculate_best_singles(score_list, n_picks, current_issue):
     
     final_picks = []
     seen_reds = []
+    # 单式获取一个包含所有16个蓝球的完整池子（已去重）
     b_pool, _ = recommend_blues(16) 
     blue_idx = 0
     
@@ -356,7 +375,6 @@ with tab1:
     
     if st.button("一键计算最优组合", type="primary", use_container_width=True):
         with st.spinner("正在测算本期全新撒网组合..."):
-            # 传入当前期号，触发动态种子
             best_singles = calculate_best_singles(tuple(score_df[["号码", "综合分"]].values.tolist()), n_picks, latest_issue)
             score_map = dict(score_df[["号码", "综合分"]].values.tolist())
             
