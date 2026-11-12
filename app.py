@@ -10,7 +10,7 @@ from math import comb
 
 st.set_page_config(page_title="双色球全量最优解", layout="centered")
 st.title("双色球全量最优解计算器")
-st.caption("废除抽样，全量遍历 110 万种红球组合，寻找绝对最优解。")
+st.caption("全量遍历 110 万种组合，单式/复式均由底层海量数据反推生成。")
 
 PER_BET = 2
 MAX_AMOUNT = 20000
@@ -302,19 +302,17 @@ def generate_detailed_report(reds, blue):
     if same_tails >= 1: report += f"- 🌟 **同尾加成**: 包含{same_tails}组同尾\n"
     return report
 
-# ==================== 全量暴力遍历引擎 ====================
+# ==================== 全量暴力遍历引擎（单式/复式共用一个超大底层池） ====================
 @st.cache_data(ttl=3600)
-def calculate_full_best_singles(n_picks):
+def calculate_global_top_combos():
     # 获取所有红球组合 C_33^6 = 1,107,568
     all_combos = list(itertools.combinations(range(1, 34), 6))
     
     valid_candidates = []
     for reds in all_combos:
         s = sum(reds)
-        # 一级秒杀剪枝：和值不在 75-125 直接滚蛋，砍掉 70% 计算量
         if not (75 <= s <= 125): continue
         odd = sum(1 for x in reds if x % 2 == 1)
-        # 二级秒杀剪枝：极端奇偶直接滚蛋
         if odd == 0 or odd == 6: continue
         
         sc, _, z_str = get_group_score(reds)
@@ -322,30 +320,7 @@ def calculate_full_best_singles(n_picks):
             
     # 对剩下的几十万组进行排名
     valid_candidates.sort(key=lambda x: x[0], reverse=True)
-    
-    final_picks = []
-    seen_reds = []
-    b_pool, _ = recommend_blues(16) 
-    blue_idx = 0
-    
-    for base_sc, cand, z_str in valid_candidates:
-        if len(final_picks) >= n_picks: break
-        
-        valid = True
-        # 网状撒网：最多重合1个
-        for selected in seen_reds:
-            overlap_count = len(set(cand) & set(selected))
-            if overlap_count >= 2:
-                valid = False 
-                break
-        
-        if valid:
-            blue = b_pool[blue_idx % len(b_pool)]
-            final_picks.append((base_sc, list(cand), blue, z_str, get_blue_reason(blue)))
-            seen_reds.append(cand)
-            blue_idx += 1
-            
-    return final_picks
+    return valid_candidates
 
 # ==================== 界面 ====================
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🎯 最优单式", "📦 最优复式", "🔍 号码诊断", "🔥 冷热透视", "📜 历史开奖"])
@@ -357,9 +332,27 @@ with tab1:
     
     if st.button("开始 110 万次全量海选", type="primary", use_container_width=True):
         with st.spinner("机器正在疯狂遍历 110 万种可能，剔除死号，请稍候..."):
-            best_singles = calculate_full_best_singles(n_picks)
+            valid_candidates = calculate_global_top_combos()
+            final_picks = []
+            seen_reds = []
+            b_pool, _ = recommend_blues(16) 
+            blue_idx = 0
             
-            for i, (gs, reds, blue, z_str, blue_reason) in enumerate(best_singles, 1):
+            for base_sc, cand, z_str in valid_candidates:
+                if len(final_picks) >= n_picks: break
+                valid = True
+                for selected in seen_reds:
+                    overlap_count = len(set(cand) & set(selected))
+                    if overlap_count >= 2:
+                        valid = False 
+                        break
+                if valid:
+                    blue = b_pool[blue_idx % len(b_pool)]
+                    final_picks.append((base_sc, list(cand), blue, z_str, get_blue_reason(blue)))
+                    seen_reds.append(cand)
+                    blue_idx += 1
+            
+            for i, (gs, reds, blue, z_str, blue_reason) in enumerate(final_picks, 1):
                 rating = get_rating(gs)
                 title = f"第{i}注 ｜ {rating} ｜ 评分 {gs} ｜ 形态 {z_str} ｜ 红球 {' '.join(f'{x:02d}' for x in reds)} ｜ 蓝球 {blue:02d}"
                 with st.expander(title, expanded=(i==1)):
@@ -368,7 +361,9 @@ with tab1:
                     st.markdown(generate_detailed_report(reds, blue))
 
 with tab2:
-    st.subheader("测算最优复式")
+    st.subheader("测算最优复式（超级引擎反哺）")
+    st.caption("复式红球池不再拼凑，而是从全量 110 万组的 Top 3000 强单式中反推高频骨架！")
+    
     col1, col2 = st.columns(2)
     with col1:
         n_red = st.selectbox("选几个红球", [7, 8, 9, 10, 11, 12], index=0)
@@ -376,36 +371,50 @@ with tab2:
         m_blue = st.selectbox("选几个蓝球", [1, 2, 3, 4, 5, 16], index=0)
         
     if st.button("智能推荐最优复式", type="primary", use_container_width=True):
-        best_reds = sorted(score_df.head(n_red)["号码"].tolist())
-        best_blues, blue_logic = recommend_blues(m_blue)
-
-        top6 = best_reds[:6]
-        gs, checks, z_str = get_group_score(top6)
-        
-        bets = comb(n_red, 6) * m_blue
-        amount = bets * PER_BET
-        
-        st.info(f"**推荐红球：** {' '.join(f'{x:02d}' for x in best_reds)}")
-        st.info(f"**推荐蓝球：** {' '.join(f'{x:02d}' for x in best_blues)}")
-        st.caption(f"💡 **选蓝逻辑**：{blue_logic}")
-        
-        st.markdown(f"### 方案评分：{gs} （形态 {z_str}）")
-        st.metric("组合注数", f"{bets} 注")
-        st.metric("投注金额", f"¥{amount}")
-        
-        st.divider()
-        st.markdown("### 🔍 核心红球与蓝球数据解析")
-        red_details = []
-        for r in best_reds:
-            freq = int(score_df[score_df["号码"] == r]["近30期频次"].values[0])
-            miss = int(score_df[score_df["号码"] == r]["当前遗漏"].values[0])
-            tag = red_tag_dict[r]
-            special_tag = " [上期重号]" if r in set(df["reds"].tolist()[-1]) else (" [隔期码]" if len(df) >= 2 and r in set(df["reds"].tolist()[-2]) else "")
-            red_details.append(f"**{r:02d}**: 评{score_map[r]}, 出{freq}次, 漏{miss}期 [{tag}]{special_tag}")
-        st.markdown("  \n".join(red_details))
-        
-        blue_details = [f"**蓝球 {b:02d}**: {get_blue_reason(b)}" for b in best_blues]
-        st.markdown("  \n".join(blue_details))
+        with st.spinner("正在基于全量池反推复式骨架..."):
+            valid_candidates = calculate_global_top_combos()
+            
+            # 取排名前 3000 注的顶级单式
+            top_3000 = valid_candidates[:3000]
+            
+            # 统计这些顶级单式中，每个号码出现的频率
+            red_counter = Counter()
+            for sc, reds, z in top_3000:
+                red_counter.update(reds)
+                
+            # 选出频次最高的 n_red 个红球
+            best_reds = sorted([num for num, count in red_counter.most_common(n_red)])
+            
+            # 蓝球按智能梯次分配
+            best_blues, blue_logic = recommend_blues(m_blue)
+            
+            top6 = best_reds[:6] # 仅做形态演示
+            gs, checks, z_str = get_group_score(top6)
+            
+            bets = comb(n_red, 6) * m_blue
+            amount = bets * PER_BET
+            
+            st.info(f"**推荐红球：** {' '.join(f'{x:02d}' for x in best_reds)}")
+            st.info(f"**推荐蓝球：** {' '.join(f'{x:02d}' for x in best_blues)}")
+            st.caption(f"💡 **选蓝逻辑**：{blue_logic}")
+            
+            st.markdown(f"### 方案评分：{gs} （以核心前6个测算）")
+            st.metric("组合注数", f"{bets} 注")
+            st.metric("投注金额", f"¥{amount}")
+            
+            st.divider()
+            st.markdown("### 🔍 核心红球与蓝球数据解析")
+            red_details = []
+            for r in best_reds:
+                freq = int(score_df[score_df["号码"] == r]["近30期频次"].values[0])
+                miss = int(score_df[score_df["号码"] == r]["当前遗漏"].values[0])
+                tag = red_tag_dict[r]
+                special_tag = " [上期重号]" if r in set(df["reds"].tolist()[-1]) else (" [隔期码]" if len(df) >= 2 and r in set(df["reds"].tolist()[-2]) else "")
+                red_details.append(f"**{r:02d}**: 评{score_map[r]}, 出{freq}次, 漏{miss}期 [{tag}]{special_tag}")
+            st.markdown("  \n".join(red_details))
+            
+            blue_details = [f"**蓝球 {b:02d}**: {get_blue_reason(b)}" for b in best_blues]
+            st.markdown("  \n".join(blue_details))
 
 with tab3:
     st.subheader("🔍 我的号码深度诊断")
