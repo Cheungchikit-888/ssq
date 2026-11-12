@@ -10,7 +10,7 @@ from math import comb
 
 st.set_page_config(page_title="双色球最优解计算器", layout="centered")
 st.title("双色球最优解计算器")
-st.caption("大数定律弹性打分 + 绝对高分优先 + 单式网状撒网保本策略。")
+st.caption("动态数据引擎 + 大数定律弹性打分 + 单式网状撒网保本策略。")
 
 PER_BET = 2
 MAX_AMOUNT = 20000
@@ -63,9 +63,10 @@ def load_history():
     return pd.DataFrame(rows), "内置示例（非真实数据）"
 
 df, data_source = load_history()
-st.success(f"数据源：{data_source} ｜ 最新：{df.iloc[-1]['issue']} ｜ 刷新：5分钟")
+latest_issue = str(df.iloc[-1]['issue'])
+st.success(f"数据源：{data_source} ｜ 最新：{latest_issue} ｜ 刷新：5分钟")
 
-# ==================== 核心引擎：评分与冷热温（基于近30期） ====================
+# ==================== 核心引擎：评分与冷热温 ====================
 def compute_scores(df):
     reds_list = df["reds"].tolist()
     n = len(reds_list)
@@ -293,11 +294,17 @@ def generate_detailed_report(reds, blue, score_map):
     if same_tails >= 1: report += f"- 🌟 **同尾加成**: 包含{same_tails}组同尾\n"
     return report
 
-# ==================== 单式最优解测算（终极撒网保本逻辑） ====================
+# ==================== 单式最优解测算（动态种子引擎版） ====================
 @st.cache_data(ttl=3600)
-def calculate_best_singles(score_list, n_picks=5):
+def calculate_best_singles(score_list, n_picks, current_issue):
+    # 【核心修复】：使用动态期号作为随机种子，打破之前的固话池子
+    try:
+        seed_val = int(current_issue)
+    except:
+        seed_val = 42 # 容错兜底
+    random.seed(seed_val)
+    
     score_map = dict(score_list)
-    random.seed(42) 
     candidates = set()
     
     attempts = 0
@@ -318,8 +325,6 @@ def calculate_best_singles(score_list, n_picks=5):
     
     final_picks = []
     seen_reds = []
-    
-    # 蓝球梯次分配池
     b_pool, _ = recommend_blues(16) 
     blue_idx = 0
     
@@ -327,7 +332,6 @@ def calculate_best_singles(score_list, n_picks=5):
         if len(final_picks) >= n_picks: break
         
         valid = True
-        # 【终极改变】：红球互斥撒网，重合度最多 1 个
         for selected in seen_reds:
             overlap_count = len(set(cand) & set(selected))
             if overlap_count >= 2:
@@ -347,12 +351,13 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["🎯 最优单式", "📦 最优复式"
 
 with tab1:
     st.subheader("测算最优单式（网状撒网模式）")
-    st.caption("已启用【红球互斥撒网】与【蓝球梯次分配】，彻底告别一损俱损。")
+    st.caption("已启用动态数据引擎：每一期开奖后，底层6万组样本将彻底洗牌重算。")
     n_picks = st.slider("测算前几组", 1, 10, 5)
     
     if st.button("一键计算最优组合", type="primary", use_container_width=True):
-        with st.spinner("正在测算网状撒网组合..."):
-            best_singles = calculate_best_singles(tuple(score_df[["号码", "综合分"]].values.tolist()), n_picks)
+        with st.spinner("正在测算本期全新撒网组合..."):
+            # 传入当前期号，触发动态种子
+            best_singles = calculate_best_singles(tuple(score_df[["号码", "综合分"]].values.tolist()), n_picks, latest_issue)
             score_map = dict(score_df[["号码", "综合分"]].values.tolist())
             
             for i, (gs, reds, blue, z_str, blue_reason) in enumerate(best_singles, 1):
